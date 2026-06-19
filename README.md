@@ -2,6 +2,10 @@
 
 Production-style reference demo showing how **DSPy** pipelines benefit from **Mem0** long-term memory, with **Ollama** for local LLM inference and a **Streamlit live dashboard** for efficiency metrics.
 
+## 🎥 Demo Video
+
+[![Watch the video](https://img.youtube.com/vi/hJBocmICFgU/maxresdefault.jpg)](https://www.youtube.com/watch?v=hJBocmICFgU)
+
 ## What it demonstrates
 
 - **No-memory baseline** — same DSPy pipeline without retrieval; every run starts cold.
