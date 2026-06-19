@@ -1,0 +1,33 @@
+[project]
+name = "dspy-crewai-mem0"
+version = "0.1.0"
+description = "Production-style DSPy + Mem0 + Ollama demo."
+authors = [{ name = "Elshafie Eltayeb", email = "you@example.com" }]
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "dspy",
+    "mem0ai[nlp]",
+    "chromadb",
+    "matplotlib",
+    "networkx",
+    "pandas",
+    "ollama",
+    "streamlit",
+    "plotly",
+    "streamlit-autorefresh",
+    "onnxruntime==1.23.2",
+]
+
+[project.scripts]
+demo-no-memory = "app.pipelines.no_memory_pipeline:main"
+demo-memory = "app.pipelines.memory_pipeline:main"
+demo-heavy = "app.workloads.heavy_workload:main"
+demo-dashboard = "app.telemetry.run_dashboard:main"
+demo-reset = "app.reset_session:main"
+
+[tool.poetry]
+packages = [{ include = "app" }]
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
