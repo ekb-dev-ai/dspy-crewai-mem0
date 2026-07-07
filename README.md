@@ -4,7 +4,11 @@ Production-style reference demo showing how **DSPy** and **CrewAI** pipelines be
 
 ## 🎥 Demo Video
 
+### Part1:
 [![Watch the video](https://img.youtube.com/vi/hJBocmICFgU/maxresdefault.jpg)](https://www.youtube.com/watch?v=hJBocmICFgU)
+
+### Part2:
+[![Watch the video](https://img.youtube.com/vi/-AwX_ErkeKc/maxresdefault.jpg)](https://www.youtube.com/watch?v=-AwX_ErkeKc)
 
 ## What it demonstrates
 
