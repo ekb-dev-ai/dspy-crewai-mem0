@@ -46,8 +46,12 @@ def reset_live_metrics(session_id: str, duration_minutes: int) -> None:
             "deep_path_count": 0,
             "no_memory_count": 0,
             "memory_pipeline_count": 0,
+            "wall_seconds_actual": 0.0,
+            "wall_seconds_baseline": 0.0,
+            "framework_counts": {},
         },
         "events": [],
+        "amnesia_markers": [],
     }
     with _LOCK:
         _atomic_write_json(METRICS_PATH, payload)
@@ -172,6 +176,176 @@ def log_task_event(event: dict[str, Any]) -> None:
         event["timestamp"] = time.time()
         payload["events"].append(event)
         payload["events"] = payload["events"][-600:]
+        payload["last_updated"] = time.time()
+        _atomic_write_json(METRICS_PATH, payload)
+
+
+def log_race_pair(
+    session_id: str,
+    iteration: int,
+    task_id: str,
+    task_text: str,
+    framework: str,
+    memory_side: dict[str, Any],
+    nomemory_side: dict[str, Any],
+) -> None:
+    """Log one head-to-head task: memory variant vs no-memory variant.
+
+    Each *_side dict carries measured values:
+        tokens, prompt_tokens, completion_tokens, llm_calls, latency_sec,
+        memory_hits (memory side), path (memory side: 'fast'/'deep').
+
+    Totals treat the no-memory variant as the baseline, so savings are the real
+    measured delta between the two runs of the same task.
+    """
+    mem_tokens = int(memory_side.get("tokens", 0))
+    nm_tokens = int(nomemory_side.get("tokens", 0))
+    mem_calls = int(memory_side.get("llm_calls", 0))
+    nm_calls = int(nomemory_side.get("llm_calls", 0))
+    mem_latency = float(memory_side.get("latency_sec", 0.0))
+    nm_latency = float(nomemory_side.get("latency_sec", 0.0))
+    memory_hits = int(memory_side.get("memory_hits", 0))
+    path = memory_side.get("path", "deep")
+
+    with _LOCK:
+        payload = read_live_metrics()
+        if not payload:
+            reset_live_metrics(session_id=session_id, duration_minutes=0)
+            payload = read_live_metrics()
+        if not payload:
+            return
+
+        totals = payload["totals"]
+        totals["tasks_processed"] += 1
+        totals["memory_search_calls"] += 1
+        totals["memory_add_calls"] += 1
+        totals["memory_hits"] += memory_hits
+        totals["llm_requests"] += mem_calls
+        totals["llm_requests_baseline"] += nm_calls
+        totals["token_est_actual"] += mem_tokens
+        totals["token_est_baseline"] += nm_tokens
+        totals["token_saved_est"] += max(0, nm_tokens - mem_tokens)
+        totals["cost_usd_actual_est"] = round(
+            totals["cost_usd_actual_est"] + _estimate_cost_usd(mem_tokens), 6
+        )
+        totals["cost_usd_baseline_est"] = round(
+            totals["cost_usd_baseline_est"] + _estimate_cost_usd(nm_tokens), 6
+        )
+        totals["cost_usd_saved_est"] = round(
+            totals["cost_usd_baseline_est"] - totals["cost_usd_actual_est"], 6
+        )
+        totals["wall_seconds_actual"] = round(
+            totals.get("wall_seconds_actual", 0.0) + mem_latency, 3
+        )
+        totals["wall_seconds_baseline"] = round(
+            totals.get("wall_seconds_baseline", 0.0) + nm_latency, 3
+        )
+        if path == "fast":
+            totals["fast_path_count"] += 1
+        else:
+            totals["deep_path_count"] += 1
+        fw_counts = totals.setdefault("framework_counts", {})
+        fw_counts[framework] = fw_counts.get(framework, 0) + 1
+
+        now = time.time()
+        base = {
+            "session_id": session_id,
+            "iteration": iteration,
+            "pair_idx": iteration,
+            "task_id": task_id,
+            "task_text": task_text,
+            "framework": framework,
+            "timestamp": now,
+        }
+        payload["events"].append(
+            {
+                **base,
+                "variant": "memory",
+                "path": path,
+                "memory_hits": memory_hits,
+                "llm_requests": mem_calls,
+                "token_est_actual": mem_tokens,
+                "prompt_tokens": int(memory_side.get("prompt_tokens", 0)),
+                "completion_tokens": int(memory_side.get("completion_tokens", 0)),
+                "latency_sec": round(mem_latency, 3),
+            }
+        )
+        payload["events"].append(
+            {
+                **base,
+                "variant": "no_memory",
+                "path": "no_memory",
+                "memory_hits": 0,
+                "llm_requests": nm_calls,
+                "token_est_actual": nm_tokens,
+                "prompt_tokens": int(nomemory_side.get("prompt_tokens", 0)),
+                "completion_tokens": int(nomemory_side.get("completion_tokens", 0)),
+                "latency_sec": round(nm_latency, 3),
+            }
+        )
+        payload["events"] = payload["events"][-600:]
+        payload["last_updated"] = now
+        _atomic_write_json(METRICS_PATH, payload)
+
+
+def log_consistency_probe(
+    session_id: str,
+    iteration: int,
+    framework: str,
+    memory_side: dict[str, Any],
+    nomemory_side: dict[str, Any],
+    scores: dict[str, float],
+) -> None:
+    """Log the 'it remembered' recall probe as two events with a consistency score.
+
+    This does not touch savings totals — it is a qualitative consistency signal,
+    not part of the token race.
+    """
+    with _LOCK:
+        payload = read_live_metrics()
+        if not payload:
+            reset_live_metrics(session_id=session_id, duration_minutes=0)
+            payload = read_live_metrics()
+        if not payload:
+            return
+        now = time.time()
+        for variant, side, score_key in (
+            ("memory", memory_side, "memory_consistency"),
+            ("no_memory", nomemory_side, "cold_consistency"),
+        ):
+            payload["events"].append(
+                {
+                    "session_id": session_id,
+                    "iteration": iteration,
+                    "pair_idx": iteration,
+                    "task_id": "recall_probe",
+                    "task_text": "Recall the Week 3 theme decided earlier.",
+                    "framework": framework,
+                    "variant": variant,
+                    "path": "recall",
+                    "memory_hits": int(side.get("memory_hits", 0)),
+                    "llm_requests": int(side.get("llm_calls", 0)),
+                    "token_est_actual": int(side.get("tokens", 0)),
+                    "latency_sec": round(float(side.get("latency_sec", 0.0)), 3),
+                    "consistency": float(scores.get(score_key, 0.0)),
+                    "timestamp": now,
+                }
+            )
+        payload["totals"]["recall_consistency_gap"] = float(scores.get("consistency_gap", 0.0))
+        payload["events"] = payload["events"][-600:]
+        payload["last_updated"] = now
+        _atomic_write_json(METRICS_PATH, payload)
+
+
+def add_amnesia_marker(at_pair_idx: int, deleted: int) -> None:
+    """Record that memory was wiped live, anchored to the current task index."""
+    with _LOCK:
+        payload = read_live_metrics()
+        if not payload:
+            return
+        payload.setdefault("amnesia_markers", []).append(
+            {"pair_idx": at_pair_idx, "deleted": deleted, "timestamp": time.time()}
+        )
         payload["last_updated"] = time.time()
         _atomic_write_json(METRICS_PATH, payload)
 

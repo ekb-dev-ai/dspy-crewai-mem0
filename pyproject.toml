@@ -6,6 +6,7 @@ authors = [{ name = "Elshafie Eltayeb", email = "you@example.com" }]
 requires-python = ">=3.10,<3.13"
 dependencies = [
     "dspy",
+    "crewai",
     "mem0ai[nlp]",
     "chromadb",
     "matplotlib",
@@ -22,6 +23,7 @@ dependencies = [
 demo-no-memory = "app.pipelines.no_memory_pipeline:main"
 demo-memory = "app.pipelines.memory_pipeline:main"
 demo-heavy = "app.workloads.heavy_workload:main"
+demo-crew-race = "app.workloads.crew_race:main"
 demo-dashboard = "app.telemetry.run_dashboard:main"
 demo-reset = "app.reset_session:main"
 

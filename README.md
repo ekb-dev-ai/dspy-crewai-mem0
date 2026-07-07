@@ -1,6 +1,6 @@
-# DSPy + Mem0 + Ollama Demo
+# DSPy + CrewAI + Mem0 + Ollama Demo
 
-Production-style reference demo showing how **DSPy** pipelines benefit from **Mem0** long-term memory, with **Ollama** for local LLM inference and a **Streamlit live dashboard** for efficiency metrics.
+Production-style reference demo showing how **DSPy** and **CrewAI** pipelines benefit from **Mem0** long-term memory, with **Ollama** for local LLM inference and a **Streamlit live dashboard** for *measured* efficiency metrics.
 
 ## 🎥 Demo Video
 
@@ -11,7 +11,13 @@ Production-style reference demo showing how **DSPy** pipelines benefit from **Me
 - **No-memory baseline** — same DSPy pipeline without retrieval; every run starts cold.
 - **Memory pipeline** — Mem0 search before planning, then store synthesized reports for reuse.
 - **Heavy workload** — ~10-minute multi-task loop with fast/deep routing based on memory hits.
-- **Live dashboard** — tracks memory calls, LLM requests, token estimates, and savings across all demo modes.
+- **CrewAI shared-brain race** — runs the *same* tasks through a memory-backed crew and a cold crew, head to head, on the same Mem0 brain. As the brain fills, the memory crew increasingly takes the fast path and its cumulative tokens / cost / latency visibly diverge from the cold crew.
+- **"It remembered" probe** — a recall task that depends on a decision made many tasks earlier; the memory crew stays consistent (high embedding similarity to the real earlier decision), the cold crew drifts.
+- **Live dashboard** — animated odometers (tokens / cost / seconds / calls saved), a memory-vs-cold race chart, a pulsing shared-brain graph, and a framework filter.
+
+### Measured, not estimated
+
+Token counts are real. CrewAI numbers come from CrewAI's own `get_token_usage_summary()` (one LLM call per step, deterministic); any LiteLLM-routed work is captured by `app/telemetry/usage_meter.py`. The "cost saved" figure is a projection that multiplies *measured* saved tokens by a published frontier-API blended rate (`$0.004 / 1K`, shown on the dashboard).
 
 ## Prerequisites
 
@@ -25,6 +31,11 @@ Pull the required models:
 ollama pull llama3.1:8b
 ollama pull nomic-embed-text
 ```
+
+The chat model is resolved at startup from what the Ollama server actually has
+loaded (preference order `llama3.1:8b → llama3.1:latest → llama3.2:latest → gemma3:27b`),
+so the demo keeps working if tags differ. Override with `DEMO_CHAT_MODEL` /
+`DEMO_EMBED_MODEL` / `OLLAMA_BASE_URL` env vars.
 
 ## Install
 
@@ -42,7 +53,8 @@ poetry install
 | `poetry run demo-reset`                                         | Clear Chroma memories, live telemetry, and run logs |
 | `poetry run demo-no-memory`                                     | Run the control pipeline (no Mem0 retrieval)        |
 | `poetry run demo-memory`                                        | Run the memory-augmented pipeline                   |
-| `poetry run demo-heavy --duration-minutes 10 --pause-seconds 4` | Long-running workload with live telemetry           |
+| `poetry run demo-heavy --duration-minutes 10 --pause-seconds 4` | Long-running DSPy workload with live telemetry      |
+| `poetry run demo-crew-race --rounds 2 --pause-seconds 1`        | CrewAI memory-vs-cold head-to-head race (the viral one) |
 | `poetry run demo-dashboard`                                     | Open the Streamlit live dashboard                   |
 
 
@@ -71,23 +83,77 @@ poetry run demo-heavy --duration-minutes 10 --pause-seconds 4
 
 The dashboard reads `./data/live_metrics.json` and updates as events are logged.
 
+### Recording flow (the CrewAI race)
+
+```bash
+# Terminal 1
+poetry run demo-reset
+poetry run demo-dashboard
+
+# Terminal 2 — runs the same 8 course-building tasks twice, memory crew vs cold crew
+poetry run demo-crew-race --rounds 2 --pause-seconds 1
+```
+
+Watch the dashboard: round 1 fills the shared brain (both crews cost about the
+same), and in round 2 the memory crew flips to the fast path and the cost /
+token / latency lines fan apart. The run ends with the **"it remembered"** recall
+probe — the memory crew names the exact Week 3 theme it defined 15 tasks earlier;
+the cold crew guesses. The consistency gap is shown as two embedding-similarity
+scores.
+
+#### How CrewAI uses the shared brain
+
+Each task is driven through CrewAI's own `LLM` with explicit role prompts
+(Curriculum Planner → Course Content Writer). We call `LLM.call` directly instead
+of the multi-agent `Crew` executor: on a local llama model the executor re-prompts
+unpredictably (a single task ballooned to 7 LLM calls), which makes token counts
+noisy. `LLM.call` is exactly one request per step, so the demo is deterministic
+(**deep = 2 calls, fast = 1 call**) and every token is measured.
+
+- **Memory crew** searches Mem0 for prior deliverables. ≥2 hits → fast path
+  (reuse + deltas, 1 call); otherwise deep path (plan + write, 2 calls). It writes
+  each deliverable back to the shared brain.
+- **Cold crew** never touches Mem0 and always runs the deep path.
+
+The brain is the *same* Mem0/Chroma store the DSPy demo uses, so a CrewAI crew can
+benefit from memories a DSPy pipeline wrote — two frameworks, one brain.
+
+#### The amnesia switch
+
+While a race is running, the dashboard sidebar has a **💥 Wipe memory now** button.
+Press it and the memory crew's brain is deleted mid-run — its next tasks miss
+every lookup, fall back to the deep path, and its cost / tokens / latency snap
+back up to the cold crew's level. A dashed `🧠 wiped` marker is dropped on the
+race charts at that point, and you can watch it slowly re-learn afterwards.
+
+Mechanics: the dashboard only writes a small request file
+(`app/telemetry/control.py`); the running race process — which owns the Mem0
+handle — performs the wipe between tasks, so the two processes never write Chroma
+at once.
+
 ## Project layout
 
 ```
 app/
-  config.py                 # Mem0 + DSPy/Ollama configuration
+  config.py                 # Mem0 + DSPy/CrewAI/Ollama config, runtime model resolution
   utils.py                  # Run logging and token estimates
   reset_session.py          # Clears session data
   pipelines/
     signatures.py           # GapPlanner, Researcher, Synthesizer
-    no_memory_pipeline.py   # Control pipeline
-    memory_pipeline.py      # Mem0-augmented pipeline
+    no_memory_pipeline.py   # DSPy control pipeline
+    memory_pipeline.py      # DSPy Mem0-augmented pipeline
+  crew/
+    tasks.py                # Course-building work items + recall probe
+    shared_brain.py         # CrewAI pipeline on the shared Mem0 brain (fast/deep)
+    consistency.py          # Embedding-similarity "it remembered" scoring
   telemetry/
-    live_telemetry.py       # Writes live_metrics.json
-    live_dashboard.py       # Streamlit UI
+    usage_meter.py          # Measured LiteLLM token usage (context manager)
+    live_telemetry.py       # Writes live_metrics.json (race pairs, recall probe)
+    live_dashboard.py       # Streamlit UI (odometers, race chart, brain graph)
     run_dashboard.py        # Dashboard entrypoint
   workloads/
-    heavy_workload.py       # Multi-task loop with fast/deep routing
+    heavy_workload.py       # DSPy multi-task loop with fast/deep routing
+    crew_race.py            # CrewAI memory-vs-cold head-to-head race
 data/                       # Gitignored runtime data (Chroma, logs, metrics)
 ```
 
